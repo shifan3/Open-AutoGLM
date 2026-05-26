@@ -392,6 +392,48 @@ def launch_app(
         return False
 
 
+def kill_app(
+    app_name: str,
+    wda_url: str = "http://localhost:8100",
+    session_id: str | None = None,
+    delay: float = 1.0,
+) -> bool:
+    """
+    Terminate an app by name.
+
+    Args:
+        app_name: The app name (must be in APP_PACKAGES).
+        wda_url: WebDriverAgent URL.
+        session_id: Optional WDA session ID.
+        delay: Delay in seconds after terminating.
+
+    Returns:
+        True if app was terminated, False if app not found or command failed.
+    """
+    if app_name not in APP_PACKAGES:
+        return False
+
+    try:
+        import requests
+
+        bundle_id = APP_PACKAGES[app_name]
+        url = _get_wda_session_url(wda_url, session_id, "wda/apps/terminate")
+
+        response = requests.post(
+            url, json={"bundleId": bundle_id}, timeout=10, verify=False
+        )
+
+        time.sleep(delay)
+        return response.status_code in (200, 201)
+
+    except ImportError:
+        print("Error: requests library required. Install: pip install requests")
+        return False
+    except Exception as e:
+        print(f"Error terminating app: {e}")
+        return False
+
+
 def get_screen_size(
     wda_url: str = "http://localhost:8100", session_id: str | None = None
 ) -> tuple[int, int]:

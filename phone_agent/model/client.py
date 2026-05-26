@@ -8,6 +8,7 @@ from typing import Any
 from openai import OpenAI
 
 from phone_agent.config.i18n import get_message
+from phone_agent.test_state import extract_test_status
 
 
 @dataclass
@@ -23,6 +24,7 @@ class ModelConfig:
     frequency_penalty: float = 0.2
     extra_body: dict[str, Any] = field(default_factory=dict)
     lang: str = "cn"  # Language for UI messages: 'cn' or 'en'
+    verbose: bool = True
 
 
 @dataclass
@@ -32,6 +34,7 @@ class ModelResponse:
     thinking: str
     action: str
     raw_content: str
+    test_status: str | None = None
     # Performance metrics
     time_to_first_token: float | None = None  # Time to first token (seconds)
     time_to_thinking_end: float | None = None  # Time to thinking end (seconds)
@@ -109,8 +112,9 @@ class ModelClient:
                     if marker in buffer:
                         # Marker found, print everything before it
                         thinking_part = buffer.split(marker, 1)[0]
-                        print(thinking_part, end="", flush=True)
-                        print()  # Print newline after thinking is complete
+                        if self.config.verbose:
+                            print(thinking_part, end="", flush=True)
+                            print()  # Print newline after thinking is complete
                         in_action_phase = True
                         marker_found = True
 
@@ -136,38 +140,45 @@ class ModelClient:
 
                 if not is_potential_marker:
                     # Safe to print the buffer
-                    print(buffer, end="", flush=True)
+                    if self.config.verbose:
+                        print(buffer, end="", flush=True)
                     buffer = ""
 
         # Calculate total time
         total_time = time.time() - start_time
-
+        if self.config.verbose:
+            print("raw_content:")
+            print(raw_content)
+            print("*" * 50)
         # Parse thinking and action from response
         thinking, action = self._parse_response(raw_content)
+        test_status = extract_test_status(raw_content)
 
         # Print performance metrics
         lang = self.config.lang
-        print()
-        print("=" * 50)
-        print(f"⏱️  {get_message('performance_metrics', lang)}:")
-        print("-" * 50)
-        if time_to_first_token is not None:
+        if self.config.verbose:
+            print()
+            print("=" * 50)
+            print(f"[STATS] {get_message('performance_metrics', lang)}:")
+            print("-" * 50)
+            if time_to_first_token is not None:
+                print(
+                    f"  {get_message('time_to_first_token', lang)}: {time_to_first_token:.3f}s"
+                )
+            if time_to_thinking_end is not None:
+                print(
+                    f"  {get_message('time_to_thinking_end', lang)}:        {time_to_thinking_end:.3f}s"
+                )
             print(
-                f"{get_message('time_to_first_token', lang)}: {time_to_first_token:.3f}s"
+                f"  {get_message('total_inference_time', lang)}:          {total_time:.3f}s"
             )
-        if time_to_thinking_end is not None:
-            print(
-                f"{get_message('time_to_thinking_end', lang)}:        {time_to_thinking_end:.3f}s"
-            )
-        print(
-            f"{get_message('total_inference_time', lang)}:          {total_time:.3f}s"
-        )
-        print("=" * 50)
+            print("=" * 50)
 
         return ModelResponse(
             thinking=thinking,
             action=action,
             raw_content=raw_content,
+            test_status=test_status,
             time_to_first_token=time_to_first_token,
             time_to_thinking_end=time_to_thinking_end,
             total_time=total_time,
@@ -191,6 +202,16 @@ class ModelClient:
         Returns:
             Tuple of (thinking, action).
         """
+        # Prefer explicit XML answer blocks so trailing tags never leak into actions.
+        if "<answer>" in content:
+            before_answer, after_answer = content.split("<answer>", 1)
+            action = after_answer.split("</answer>", 1)[0].strip()
+            thinking = before_answer
+            thinking = thinking.replace("<reasoning>", "").replace("</reasoning>", "")
+            thinking = thinking.replace("<think>", "").replace("</think>", "")
+            thinking = thinking.strip()
+            return thinking, action
+
         # Rule 1: Check for finish(message=
         if "finish(message=" in content:
             parts = content.split("finish(message=", 1)
@@ -205,12 +226,7 @@ class ModelClient:
             action = "do(action=" + parts[1]
             return thinking, action
 
-        # Rule 3: Fallback to legacy XML tag parsing
-        if "<answer>" in content:
-            parts = content.split("<answer>", 1)
-            thinking = parts[0].replace("<think>", "").replace("</think>", "").strip()
-            action = parts[1].replace("</answer>", "").strip()
-            return thinking, action
+        
 
         # Rule 4: No markers found, return content as action
         return "", content

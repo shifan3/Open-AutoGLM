@@ -1,8 +1,10 @@
 """Main PhoneAgent class for orchestrating phone automation."""
 
 import json
+import re
+import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from phone_agent.actions import ActionHandler
@@ -11,6 +13,7 @@ from phone_agent.config import get_messages, get_system_prompt
 from phone_agent.device_factory import get_device_factory
 from phone_agent.model import ModelClient, ModelConfig
 from phone_agent.model.client import MessageBuilder
+from phone_agent.test_state import TestExecutionState
 
 
 @dataclass
@@ -22,6 +25,8 @@ class AgentConfig:
     lang: str = "cn"
     system_prompt: str | None = None
     verbose: bool = True
+    test_steps: list[str] = field(default_factory=list)
+    artifact_steps: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if self.system_prompt is None:
@@ -70,6 +75,7 @@ class PhoneAgent:
     ):
         self.model_config = model_config or ModelConfig()
         self.agent_config = agent_config or AgentConfig()
+        self.model_config.verbose = self.agent_config.verbose
 
         self.model_client = ModelClient(self.model_config)
         self.action_handler = ActionHandler(
@@ -80,6 +86,12 @@ class PhoneAgent:
 
         self._context: list[dict[str, Any]] = []
         self._step_count = 0
+        self._task: str = ""
+        self._test_state = TestExecutionState(self.agent_config.test_steps)
+        self._last_screenshot = None
+        self._last_current_app = ""
+        self._saved_artifacts: dict[str, Any] = {}
+        self._last_action_feedback = ""
 
     def run(self, task: str) -> str:
         """
@@ -93,6 +105,10 @@ class PhoneAgent:
         """
         self._context = []
         self._step_count = 0
+        self._task = task
+        self._test_state = TestExecutionState(self.agent_config.test_steps)
+        self._saved_artifacts = {}
+        self._last_action_feedback = ""
 
         # First step with user prompt
         result = self._execute_step(task, is_first=True)
@@ -132,6 +148,9 @@ class PhoneAgent:
         """Reset the agent state for a new task."""
         self._context = []
         self._step_count = 0
+        self._test_state = TestExecutionState(self.agent_config.test_steps)
+        self._saved_artifacts = {}
+        self._last_action_feedback = ""
 
     def _execute_step(
         self, user_prompt: str | None = None, is_first: bool = False
@@ -143,6 +162,8 @@ class PhoneAgent:
         device_factory = get_device_factory()
         screenshot = device_factory.get_screenshot(self.agent_config.device_id)
         current_app = device_factory.get_current_app(self.agent_config.device_id)
+        self._last_screenshot = screenshot
+        self._last_current_app = current_app
 
         # Build messages
         if is_first:
@@ -151,7 +172,11 @@ class PhoneAgent:
             )
 
             screen_info = MessageBuilder.build_screen_info(current_app)
-            text_content = f"{user_prompt}\n\n{screen_info}"
+            text_content = self._build_user_prompt(
+                task_text=user_prompt or "",
+                screen_info=screen_info,
+                is_first=True,
+            )
 
             self._context.append(
                 MessageBuilder.create_user_message(
@@ -160,7 +185,11 @@ class PhoneAgent:
             )
         else:
             screen_info = MessageBuilder.build_screen_info(current_app)
-            text_content = f"** Screen Info **\n\n{screen_info}"
+            text_content = self._build_user_prompt(
+                task_text=self._task,
+                screen_info=screen_info,
+                is_first=False,
+            )
 
             self._context.append(
                 MessageBuilder.create_user_message(
@@ -168,36 +197,71 @@ class PhoneAgent:
                 )
             )
 
-        # Get model response
-        try:
-            msgs = get_messages(self.agent_config.lang)
-            print("\n" + "=" * 50)
-            print(f"💭 {msgs['thinking']}:")
-            print("-" * 50)
-            response = self.model_client.request(self._context)
-        except Exception as e:
-            if self.agent_config.verbose:
-                traceback.print_exc()
+        # Get model response (with retry for transient failures)
+        max_retries = 3
+        retry_delay = 2.0  # seconds between retries
+        response = None
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                msgs = get_messages(self.agent_config.lang)
+                if self.agent_config.verbose:
+                    print("\n" + "=" * 50)
+                    print(f"[THINK] {msgs['thinking']}:")
+                    print("-" * 50)
+                response = self.model_client.request(self._context)
+                break  # Success, exit retry loop
+            except Exception as e:
+                last_error = e
+                if self.agent_config.verbose:
+                    traceback.print_exc()
+                if attempt < max_retries - 1:
+                    print(f"[WARN] Model error (step {self._step_count}, attempt {attempt + 1}/{max_retries}): {e}")
+                    print(f"[WARN] Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    continue
+                print(f"[ERROR] Model failed after {max_retries} attempts: {e}")
+
+        if response is None:
+            # All retries exhausted — return non-finishing error to allow loop to continue
             return StepResult(
                 success=False,
-                finished=True,
+                finished=False,
                 action=None,
                 thinking="",
-                message=f"Model error: {e}",
+                message=f"Model error after {max_retries} retries: {last_error}",
             )
+
+        self._test_state.apply_status_text(response.test_status)
+        self._save_step_artifacts(screenshot)
 
         # Parse action from response
         try:
-            action = parse_action(response.action)
+            action = parse_action(response.action, verbose=self.agent_config.verbose)
         except ValueError:
             if self.agent_config.verbose:
                 traceback.print_exc()
-            action = finish(message=response.action)
+            # Return step error to keep the loop going instead of finishing
+            return StepResult(
+                success=False,
+                finished=False,
+                action=None,
+                thinking=response.thinking,
+                message=f"Parse error: {response.action}",
+            )
+
+        # Guard: if model calls finish() but thinking indicates task is still in progress,
+        # override with a Wait action instead of ending the task prematurely.
+        if action.get("_metadata") == "finish":
+            
+            thinking_lower = response.thinking.lower()
+            
 
         if self.agent_config.verbose:
             # Print thinking process
             print("-" * 50)
-            print(f"🎯 {msgs['action']}:")
+            print(f"[ACTION] {msgs['action']}:")
             print(json.dumps(action, ensure_ascii=False, indent=2))
             print("=" * 50 + "\n")
 
@@ -212,9 +276,21 @@ class PhoneAgent:
         except Exception as e:
             if self.agent_config.verbose:
                 traceback.print_exc()
+            print(f"[WARN] Action execution error (step {self._step_count}): {e}")
             result = self.action_handler.execute(
                 finish(message=str(e)), screenshot.width, screenshot.height
             )
+
+        if not result.should_finish and action.get("_metadata") != "finish":
+            time.sleep(3)
+
+        if result.message or not result.success:
+            self._last_action_feedback = (
+                f"Previous action result: success={result.success}, "
+                f"message={result.message or ''}"
+            )
+        else:
+            self._last_action_feedback = ""
 
         # Add assistant response to context
         self._context.append(
@@ -228,9 +304,9 @@ class PhoneAgent:
 
         if finished and self.agent_config.verbose:
             msgs = get_messages(self.agent_config.lang)
-            print("\n" + "🎉 " + "=" * 48)
+            print("\n" + "=" * 50)
             print(
-                f"✅ {msgs['task_completed']}: {result.message or action.get('message', msgs['done'])}"
+                f"[DONE] {msgs['task_completed']}: {result.message or action.get('message', msgs['done'])}"
             )
             print("=" * 50 + "\n")
 
@@ -242,6 +318,47 @@ class PhoneAgent:
             message=result.message or action.get("message"),
         )
 
+    def _build_user_prompt(
+        self, task_text: str, screen_info: str, is_first: bool
+    ) -> str:
+        """Build the per-step user prompt with optional test progress."""
+        test_context = self._test_state.format_prompt_context(self.agent_config.lang)
+
+        if is_first:
+            parts = [task_text]
+        else:
+            parts = [
+                f"任务: {task_text}",
+                f"当前步数: {self._step_count}/{self.agent_config.max_steps}",
+            ]
+
+        if test_context:
+            parts.append(test_context)
+
+        if self._last_action_feedback:
+            parts.append(self._last_action_feedback)
+
+        parts.append(f"** Screen Info **\n\n{screen_info}")
+        return "\n\n".join(parts)
+
+    def _save_step_artifacts(self, screenshot) -> None:
+        """Save screenshots requested by save(@name) markers in test steps."""
+        artifact_steps = self.agent_config.artifact_steps or self.agent_config.test_steps
+        if not artifact_steps:
+            return
+
+        step_index = self._test_state.current_step - 1
+        if step_index < 0 or step_index >= len(artifact_steps):
+            return
+
+        step_text = artifact_steps[step_index]
+        for artifact_name in re.findall(r"save\(\s*@([^)]+)\s*\)", step_text):
+            artifact_name = "@" + artifact_name.strip()
+            if artifact_name not in self._saved_artifacts:
+                self._saved_artifacts[artifact_name] = screenshot
+                if self.agent_config.verbose:
+                    print(f"[ARTIFACT] Saved {artifact_name} from step {self._test_state.current_step}")
+
     @property
     def context(self) -> list[dict[str, Any]]:
         """Get the current conversation context."""
@@ -251,3 +368,18 @@ class PhoneAgent:
     def step_count(self) -> int:
         """Get the current step count."""
         return self._step_count
+
+    @property
+    def last_screenshot(self):
+        """Get the screenshot from the most recent model observation."""
+        return self._last_screenshot
+
+    @property
+    def last_current_app(self) -> str:
+        """Get the app name from the most recent model observation."""
+        return self._last_current_app
+
+    @property
+    def saved_artifacts(self) -> dict[str, Any]:
+        """Get screenshots captured by save(@name) test-step markers."""
+        return self._saved_artifacts.copy()

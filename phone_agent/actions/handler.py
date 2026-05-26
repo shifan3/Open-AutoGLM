@@ -91,6 +91,7 @@ class ActionHandler:
         """Get the handler method for an action."""
         handlers = {
             "Launch": self._handle_launch,
+            "Kill": self._handle_kill,
             "Tap": self._handle_tap,
             "Type": self._handle_type,
             "Type_Name": self._handle_type,
@@ -123,6 +124,18 @@ class ActionHandler:
 
         device_factory = get_device_factory()
         success = device_factory.launch_app(app_name, self.device_id)
+        if success:
+            return ActionResult(True, False)
+        return ActionResult(False, False, f"App not found: {app_name}")
+
+    def _handle_kill(self, action: dict, width: int, height: int) -> ActionResult:
+        """Handle app force stop action."""
+        app_name = action.get("app")
+        if not app_name:
+            return ActionResult(False, False, "No app name specified")
+
+        device_factory = get_device_factory()
+        success = device_factory.kill_app(app_name, self.device_id)
         if success:
             return ActionResult(True, False)
         return ActionResult(False, False, f"App not found: {app_name}")
@@ -329,7 +342,7 @@ class ActionHandler:
         input(f"{message}\nPress Enter after completing manual operation...")
 
 
-def parse_action(response: str) -> dict[str, Any]:
+def parse_action(response: str, verbose: bool = True) -> dict[str, Any]:
     """
     Parse action from model response.
 
@@ -342,7 +355,8 @@ def parse_action(response: str) -> dict[str, Any]:
     Raises:
         ValueError: If the response cannot be parsed.
     """
-    print(f"Parsing action: {response}")
+    if verbose:
+        print(f"Parsing action: {response}")
     try:
         response = response.strip()
         if response.startswith('do(action="Type"') or response.startswith(
@@ -374,6 +388,7 @@ def parse_action(response: str) -> dict[str, Any]:
                 return action
             except (SyntaxError, ValueError) as e:
                 raise ValueError(f"Failed to parse do() action: {e}")
+                
 
         elif response.startswith("finish"):
             action = {

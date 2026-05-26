@@ -20,6 +20,13 @@ import subprocess
 import sys
 from urllib.parse import urlparse
 
+# Ensure stdout supports Unicode (required on Windows with GBK terminals)
+if sys.stdout.encoding != "utf-8":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 from openai import OpenAI
 
 from phone_agent import PhoneAgent

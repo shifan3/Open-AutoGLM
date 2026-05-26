@@ -1,6 +1,7 @@
 """Device control utilities for Android automation."""
 
 import os
+import re
 import subprocess
 import time
 from typing import List, Optional, Tuple
@@ -36,6 +37,29 @@ def get_current_app(device_id: str | None = None) -> str:
                     return app_name
 
     return "System Home"
+
+
+def _get_focused_package(device_id: str | None = None) -> str | None:
+    """Return the foreground package name when it can be parsed from dumpsys."""
+    adb_prefix = _get_adb_prefix(device_id)
+
+    result = subprocess.run(
+        adb_prefix + ["shell", "dumpsys", "window"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    for line in result.stdout.split("\n"):
+        if "mCurrentFocus" in line or "mFocusedApp" in line:
+            match = re.search(r"\s([a-zA-Z0-9_.]+)/(?:[a-zA-Z0-9_.$]+)", line)
+            if match:
+                return match.group(1)
+            match = re.search(r"\{[^}]*\s([a-zA-Z0-9_.]+)/", line)
+            if match:
+                return match.group(1)
+
+    return None
 
 
 def tap(
@@ -222,13 +246,13 @@ def launch_app(
     if delay is None:
         delay = TIMING_CONFIG.device.default_launch_delay
 
-    if app_name not in APP_PACKAGES:
+    package = _resolve_package_name(app_name)
+    if not package:
         return False
 
     adb_prefix = _get_adb_prefix(device_id)
-    package = APP_PACKAGES[app_name]
 
-    subprocess.run(
+    result = subprocess.run(
         adb_prefix
         + [
             "shell",
@@ -240,9 +264,98 @@ def launch_app(
             "1",
         ],
         capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    time.sleep(delay)
+    output = (result.stdout or "") + (result.stderr or "")
+    return result.returncode == 0 and "No activities found" not in output
+
+
+def kill_app(
+    app_name: str, device_id: str | None = None, delay: float | None = None
+) -> bool:
+    """
+    Force stop an app by name.
+
+    Args:
+        app_name: The app name (must be in APP_PACKAGES).
+        device_id: Optional ADB device ID.
+        delay: Delay in seconds after stopping. If None, uses configured default.
+
+    Returns:
+        True if the stop command was sent, False if app not found.
+    """
+    if delay is None:
+        delay = TIMING_CONFIG.device.default_home_delay
+
+    package = _resolve_package_name(app_name)
+    if not package:
+        focused_package = _get_focused_package(device_id)
+        if focused_package and not _is_system_or_launcher_package(focused_package):
+            package = focused_package
+        else:
+            return False
+
+    adb_prefix = _get_adb_prefix(device_id)
+
+    result = subprocess.run(
+        adb_prefix + ["shell", "am", "force-stop", package],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        return False
+
+    subprocess.run(
+        adb_prefix + ["shell", "input", "keyevent", "KEYCODE_HOME"],
+        capture_output=True,
     )
     time.sleep(delay)
     return True
+
+
+def _resolve_package_name(app_name: str | None) -> str | None:
+    """Resolve a configured app name or raw Android package name."""
+    if not app_name:
+        return None
+
+    app_name = app_name.strip()
+    if _looks_like_package_name(app_name):
+        return app_name
+
+    if app_name in APP_PACKAGES:
+        return APP_PACKAGES[app_name]
+
+    normalized = _normalize_app_name(app_name)
+    for known_name, package in APP_PACKAGES.items():
+        if _normalize_app_name(known_name) == normalized:
+            return package
+
+    return None
+
+
+def _looks_like_package_name(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+", value))
+
+
+def _normalize_app_name(value: str) -> str:
+    return re.sub(r"[\s_\-]+", "", value).casefold()
+
+
+def _is_system_or_launcher_package(package: str) -> bool:
+    launcher_packages = {
+        "com.miui.home",
+        "com.huawei.android.launcher",
+        "com.google.android.apps.nexuslauncher",
+        "com.sec.android.app.launcher",
+        "com.oppo.launcher",
+        "com.vivo.launcher",
+        "com.android.launcher",
+        "com.android.launcher3",
+    }
+    return package.startswith("com.android.") or package in launcher_packages
 
 
 def _get_adb_prefix(device_id: str | None) -> list:

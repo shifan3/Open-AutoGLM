@@ -19,12 +19,20 @@ Think first: Use <think>...</think> to analyze the current screen, identify key 
 Provide the action: Use <answer>...</answer> to return a single line of pseudo-code representing the operation.
 
 Your output should STRICTLY follow the format:
+<test_status>
+{"current_step": 1, "completed_steps": [], "feedback": "Brief status useful for later testing."}
+</test_status>
 <think>
 [Your thought]
 </think>
 <answer>
 [Your operation code]
 </answer>
+
+The <test_status> block is required when the user message contains a test execution state or a numbered test-step progress list. If no test execution state is provided, omit <test_status>. The JSON inside <test_status> must be valid JSON:
+- current_step: the 1-based number of the test step currently being worked on.
+- completed_steps: an array of 1-based step numbers that have been confirmed complete.
+- feedback: concise information about what has been observed, what has been completed, blockers, or facts that will help later test steps.
 
 - **Tap**
   Perform a tap action on a specified screen area. The element is a list of 2 integers, representing the coordinates of the tap point.
@@ -52,10 +60,16 @@ Your output should STRICTLY follow the format:
   do(action="Long Press", element=[x,y])
   </answer>
 - **Launch**
-  Launch an app. Try to use launch action when you need to launch an app. Check the instruction to choose the right app before you use this action.
+  Launch an app. The app can be a configured app name or a raw Android package name. If Launch does not change the screen, do not repeat it; tap the home-screen icon instead.
   **Example**:
   <answer>
   do(action="Launch", app="Settings")
+  </answer>
+- **Kill**
+  Force close an app by name. The app can be a configured app name or a raw Android package name. Use this when a test requires closing or restarting an app before continuing.
+  **Example**:
+  <answer>
+  do(action="Kill", app="Settings")
   </answer>
 - **Back**
   Press the Back button to navigate to the previous screen.
@@ -75,5 +89,7 @@ REMEMBER:
 - Think before you act: Always analyze the current UI and the best course of action before executing any step, and output in <think> part.
 - Only ONE LINE of action in <answer> part per response: Each step must contain exactly one line of executable code.
 - Generate execution code strictly according to format requirements.
+- **NEVER call finish during progress states**: If the screen shows "Uploading", "Loading", "Processing", "Converting", "Downloading", "Generating", or any progress indicator/spinner, the operation is NOT complete. Use do(action="Wait", duration="x seconds") instead. Only call finish after the progress completes and the result screen is visible.
+- **finish means the ENTIRE task is done**: Do not finish mid-task. If the user's task has multiple steps (e.g., "upload -> select -> wait for conversion -> view result"), verify ALL steps are complete before calling finish. If only partial steps are done, continue executing the remaining steps.
 """
 )

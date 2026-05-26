@@ -53,6 +53,7 @@ APP_PACKAGES: dict[str, str] = {
     "QQ邮箱": "com.tencent.androidqqmail",
     # AI & Tools
     "豆包": "com.larus.nova",
+    "试卷宝": "ai.zuoye.shijuanbao",
     # Health & Fitness
     "keep": "com.gotokeep.keep",
     "美柚": "com.lingan.seeyou",

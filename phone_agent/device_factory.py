@@ -105,6 +105,12 @@ class DeviceFactory:
         """Launch an app."""
         return self.module.launch_app(app_name, device_id, delay)
 
+    def kill_app(
+        self, app_name: str, device_id: str | None = None, delay: float | None = None
+    ) -> bool:
+        """Force stop an app."""
+        return self.module.kill_app(app_name, device_id, delay)
+
     def type_text(self, text: str, device_id: str | None = None):
         """Type text."""
         return self.module.type_text(text, device_id)

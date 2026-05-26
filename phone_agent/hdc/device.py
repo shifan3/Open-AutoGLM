@@ -300,6 +300,38 @@ def launch_app(
     return True
 
 
+def kill_app(
+    app_name: str, device_id: str | None = None, delay: float | None = None
+) -> bool:
+    """
+    Force stop an app by name.
+
+    Args:
+        app_name: The app name (must be in APP_PACKAGES).
+        device_id: Optional HDC device ID.
+        delay: Delay in seconds after stopping. If None, uses configured default.
+
+    Returns:
+        True if the stop command was sent, False if app not found.
+    """
+    if delay is None:
+        delay = TIMING_CONFIG.device.default_home_delay
+
+    if app_name not in APP_PACKAGES:
+        print(f"[HDC] App '{app_name}' not found in HarmonyOS app list")
+        return False
+
+    hdc_prefix = _get_hdc_prefix(device_id)
+    bundle = APP_PACKAGES[app_name]
+
+    _run_hdc_command(
+        hdc_prefix + ["shell", "aa", "force-stop", bundle],
+        capture_output=True,
+    )
+    time.sleep(delay)
+    return True
+
+
 def _get_hdc_prefix(device_id: str | None) -> list:
     """Get HDC command prefix with optional device specifier."""
     if device_id:

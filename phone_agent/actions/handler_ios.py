@@ -8,6 +8,7 @@ from phone_agent.xctest import (
     back,
     double_tap,
     home,
+    kill_app,
     launch_app,
     long_press,
     swipe,
@@ -42,11 +43,13 @@ class IOSActionHandler:
         self,
         wda_url: str = "http://localhost:8100",
         session_id: str | None = None,
+        verbose: bool = True,
         confirmation_callback: Callable[[str], bool] | None = None,
         takeover_callback: Callable[[str], None] | None = None,
     ):
         self.wda_url = wda_url
         self.session_id = session_id
+        self.verbose = verbose
         self.confirmation_callback = confirmation_callback or self._default_confirmation
         self.takeover_callback = takeover_callback or self._default_takeover
 
@@ -99,6 +102,7 @@ class IOSActionHandler:
         """Get the handler method for an action."""
         handlers = {
             "Launch": self._handle_launch,
+            "Kill": self._handle_kill,
             "Tap": self._handle_tap,
             "Type": self._handle_type,
             "Type_Name": self._handle_type,
@@ -136,6 +140,19 @@ class IOSActionHandler:
             return ActionResult(True, False)
         return ActionResult(False, False, f"App not found: {app_name}")
 
+    def _handle_kill(self, action: dict, width: int, height: int) -> ActionResult:
+        """Handle app terminate action."""
+        app_name = action.get("app")
+        if not app_name:
+            return ActionResult(False, False, "No app name specified")
+
+        success = kill_app(
+            app_name, wda_url=self.wda_url, session_id=self.session_id
+        )
+        if success:
+            return ActionResult(True, False)
+        return ActionResult(False, False, f"App not found: {app_name}")
+
     def _handle_tap(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle tap action."""
         element = action.get("element")
@@ -144,7 +161,8 @@ class IOSActionHandler:
 
         x, y = self._convert_relative_to_absolute(element, width, height)
 
-        print(f"Physically tap on ({x}, {y})")
+        if self.verbose:
+            print(f"Physically tap on ({x}, {y})")
 
         # Check for sensitive operation
         if "message" in action:
@@ -186,7 +204,8 @@ class IOSActionHandler:
         start_x, start_y = self._convert_relative_to_absolute(start, width, height)
         end_x, end_y = self._convert_relative_to_absolute(end, width, height)
 
-        print(f"Physically scroll from ({start_x}, {start_y}) to ({end_x}, {end_y})")
+        if self.verbose:
+            print(f"Physically scroll from ({start_x}, {start_y}) to ({end_x}, {end_y})")
 
         swipe(
             start_x,
