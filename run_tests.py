@@ -40,6 +40,9 @@ from phone_agent.device_factory import DeviceType, get_device_factory, set_devic
 from phone_agent.model import ModelConfig
 
 
+DEFAULT_UNLOCK_PIN = "123456"
+
+
 # ── Test case representation ───────────────────────────────────────────────
 
 
@@ -774,6 +777,17 @@ def wake_device_to_home(adb_prefix: list[str]) -> None:
     )
     time.sleep(0.5)
     subprocess.run(
+        adb_prefix + ["shell", "input", "text", DEFAULT_UNLOCK_PIN],
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        adb_prefix + ["shell", "input", "keyevent", "KEYCODE_ENTER"],
+        capture_output=True,
+        text=True,
+    )
+    time.sleep(0.5)
+    subprocess.run(
         adb_prefix + ["shell", "input", "keyevent", "KEYCODE_HOME"],
         capture_output=True,
         text=True,
@@ -893,6 +907,12 @@ Example test case format (.md file):
         help="Device ID",
     )
     parser.add_argument(
+        "--unlock-pin",
+        type=str,
+        default=os.getenv("PHONE_AGENT_UNLOCK_PIN", "123456"),
+        help="Unlock pin",
+    )
+    parser.add_argument(
         "--lang",
         type=str,
         choices=["cn", "en"],
@@ -936,7 +956,8 @@ Example test case format (.md file):
 def main():
     """Main entry point."""
     args = parse_args()
-
+    global DEFAULT_UNLOCK_PIN
+    DEFAULT_UNLOCK_PIN = args.unlock_pin
     # Validate directory
     test_dir = Path(args.directory)
     if not test_dir.is_dir():
